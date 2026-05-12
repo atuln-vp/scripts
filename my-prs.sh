@@ -9,7 +9,7 @@ Show merged PRs across all repos for the authenticated GitHub user,
 with per-day/per-week rates and total lines changed.
 
 Arguments:
-  DAYS    Number of days to look back (from midnight UTC).
+  DAYS    Number of days to look back (from midnight Pacific Time).
           If omitted, defaults to since last Thursday at 10:30 AM Pacific.
 
 Examples:
@@ -26,32 +26,37 @@ EOF
 
 AUTHOR="$(gh api user --jq '.login')"
 
+PT_TZ="America/Los_Angeles"
+
 if [ $# -ge 1 ]; then
   DAYS="$1"
-  SINCE="$(date -u -v-"${DAYS}"d +%Y-%m-%dT00:00:00Z 2>/dev/null \
-        || date -u -d "${DAYS} days ago" +%Y-%m-%dT00:00:00Z)"
-  LABEL="last ${DAYS} day(s)"
+  # Midnight Pacific, N days ago, as an absolute epoch second.
+  SINCE_EPOCH="$(TZ="${PT_TZ}" date -j -v-"${DAYS}"d -v0H -v0M -v0S +%s 2>/dev/null \
+              || TZ="${PT_TZ}" date -d "${DAYS} days ago 00:00:00" +%s)"
+  LABEL="last ${DAYS} day(s) (since midnight PT)"
 else
-  DOW="$(date +%u)" # 1=Mon … 7=Sun
+  DOW="$(TZ="${PT_TZ}" date +%u)"   # 1=Mon … 7=Sun, in Pacific Time
+  HHMM="$(TZ="${PT_TZ}" date +%H%M)" # current HHMM in Pacific Time
+
   # Days since last Thursday (4). If today is Thu before 10:30 PT, use previous Thu.
   DAYS_SINCE_THU=$(( (DOW - 4 + 7) % 7 ))
-  [ "${DAYS_SINCE_THU}" -eq 0 ] && DAYS_SINCE_THU=7
-
-  LAST_THU="$(date -v-"${DAYS_SINCE_THU}"d +%Y-%m-%d 2>/dev/null \
-            || date -d "${DAYS_SINCE_THU} days ago" +%Y-%m-%d)"
-  SINCE="${LAST_THU}T17:30:00Z"
-
-  # If today IS Thursday and it's past 10:30 PT (17:30 UTC), use today instead.
-  if [ "${DOW}" -eq 4 ]; then
-    NOW_UTC="$(date -u +%H%M)"
-    if [ "${NOW_UTC}" -ge 1730 ]; then
-      SINCE="$(date +%Y-%m-%d)T17:30:00Z"
-      DAYS_SINCE_THU=0
-    fi
+  if [ "${DAYS_SINCE_THU}" -eq 0 ] && [ "${HHMM}" -lt 1030 ]; then
+    DAYS_SINCE_THU=7
   fi
+
+  LAST_THU="$(TZ="${PT_TZ}" date -v-"${DAYS_SINCE_THU}"d +%Y-%m-%d 2>/dev/null \
+            || TZ="${PT_TZ}" date -d "${DAYS_SINCE_THU} days ago" +%Y-%m-%d)"
+
+  # 10:30 AM Pacific on LAST_THU, as an absolute epoch second (handles DST).
+  SINCE_EPOCH="$(TZ="${PT_TZ}" date -j -f "%Y-%m-%d %H:%M:%S" "${LAST_THU} 10:30:00" +%s 2>/dev/null \
+              || TZ="${PT_TZ}" date -d "${LAST_THU} 10:30:00" +%s)"
 
   LABEL="since last Thursday 10:30 AM PT (${LAST_THU})"
 fi
+
+# GitHub's search API takes ISO 8601; use UTC for an unambiguous query string.
+SINCE="$(date -u -r "${SINCE_EPOCH}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+       || date -u -d "@${SINCE_EPOCH}" +%Y-%m-%dT%H:%M:%SZ)"
 
 echo "Merged PRs by ${AUTHOR} — ${LABEL}"
 echo
@@ -80,8 +85,6 @@ while IFS=$'\t' read -r repo num; do
   ADDS=$(( ADDS + a )); DELS=$(( DELS + d ))
 done < <(echo "${RESULTS}" | jq -r '.[] | "\(.repository.nameWithOwner)\t\(.number)"')
 
-SINCE_EPOCH="$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "${SINCE}" +%s 2>/dev/null \
-             || date -d "${SINCE}" +%s)"
 NOW_EPOCH="$(date +%s)"
 ELAPSED_DAYS=$(( (NOW_EPOCH - SINCE_EPOCH) / 86400 ))
 [ "${ELAPSED_DAYS}" -lt 1 ] && ELAPSED_DAYS=1
