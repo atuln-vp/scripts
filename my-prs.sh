@@ -3,33 +3,51 @@ set -euo pipefail
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [DAYS]
+Usage: $(basename "$0") [-l|--lines] [DAYS]
 
 Show merged PRs across all repos for the authenticated GitHub user,
-with per-day/per-week rates and total lines changed.
+with per-day/per-week rates.
 
 Arguments:
-  DAYS    Number of days to look back (from midnight Pacific Time).
-          If omitted, defaults to since Monday at 12:00 AM Pacific.
+  DAYS          Number of days to look back (from midnight Pacific Time).
+                If omitted, defaults to since Monday at 12:00 AM Pacific.
+
+Options:
+  -l, --lines   Also compute total lines added/deleted across all PRs
+                (one extra API call per PR; slower for large ranges).
+  -h, --help    Show this help and exit.
 
 Examples:
-  $(basename "$0")        # since Monday 12:00 AM PT
-  $(basename "$0") 7      # last 7 days
-  $(basename "$0") 30     # last 30 days
+  $(basename "$0")            # since Monday 12:00 AM PT
+  $(basename "$0") 7          # last 7 days
+  $(basename "$0") -l 30      # last 30 days, with line totals
 
 Requires: gh (authenticated), jq, bc
 EOF
   exit 0
 }
 
-[[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && usage
+COUNT_LINES=0
+DAYS=""
+for arg in "$@"; do
+  case "$arg" in
+    -h|--help) usage ;;
+    -l|--lines) COUNT_LINES=1 ;;
+    *)
+      if [ -n "${DAYS}" ]; then
+        echo "Unexpected argument: ${arg}" >&2
+        exit 2
+      fi
+      DAYS="$arg"
+      ;;
+  esac
+done
 
 AUTHOR="$(gh api user --jq '.login')"
 
 PT_TZ="America/Los_Angeles"
 
-if [ $# -ge 1 ]; then
-  DAYS="$1"
+if [ -n "${DAYS}" ]; then
   # Midnight Pacific, N days ago, as an absolute epoch second.
   SINCE_EPOCH="$(TZ="${PT_TZ}" date -j -v-"${DAYS}"d -v0H -v0M -v0S +%s 2>/dev/null \
               || TZ="${PT_TZ}" date -d "${DAYS} days ago 00:00:00" +%s)"
@@ -73,14 +91,6 @@ fi
 
 echo "${RESULTS}" | jq -r '.[] | "  #\(.number)  \(.updatedAt[:10])  \(.repository.nameWithOwner)  \(.title)"'
 
-# Fetch +/- lines for each PR via the GitHub API.
-ADDS=0; DELS=0
-while IFS=$'\t' read -r repo num; do
-  STATS="$(gh api "repos/${repo}/pulls/${num}" --jq '[.additions, .deletions] | @tsv' 2>/dev/null || echo "0	0")"
-  a="${STATS%%	*}"; d="${STATS##*	}"
-  ADDS=$(( ADDS + a )); DELS=$(( DELS + d ))
-done < <(echo "${RESULTS}" | jq -r '.[] | "\(.repository.nameWithOwner)\t\(.number)"')
-
 NOW_EPOCH="$(date +%s)"
 ELAPSED_DAYS=$(( (NOW_EPOCH - SINCE_EPOCH) / 86400 ))
 [ "${ELAPSED_DAYS}" -lt 1 ] && ELAPSED_DAYS=1
@@ -88,7 +98,17 @@ WEEKS="$(echo "scale=1; ${ELAPSED_DAYS} / 7" | bc)"
 [ "$(echo "${WEEKS} < 1" | bc)" -eq 1 ] && WEEKS="1.0"
 PER_WEEK="$(echo "scale=1; ${COUNT} / ${WEEKS}" | bc)"
 PER_DAY="$(echo "scale=1; ${COUNT} / ${ELAPSED_DAYS}" | bc)"
-
-echo
 printf "Total: %d merged  |  %d days  |  %s PRs/day  |  %s PRs/week\n" "${COUNT}" "${ELAPSED_DAYS}" "${PER_DAY}" "${PER_WEEK}"
-printf "Lines: +%s / -%s  (net %s)\n" "$(printf '%d' "${ADDS}")" "$(printf '%d' "${DELS}")" "$(printf '%+d' $(( ADDS - DELS )))"
+
+if [ "${COUNT_LINES}" -eq 1 ]; then
+  # Fetch +/- lines for each PR via the GitHub API (one call per PR).
+  ADDS=0; DELS=0
+  while IFS=$'\t' read -r repo num; do
+    STATS="$(gh api "repos/${repo}/pulls/${num}" --jq '[.additions, .deletions] | @tsv' 2>/dev/null || echo "0	0")"
+    a="${STATS%%	*}"; d="${STATS##*	}"
+    ADDS=$(( ADDS + a )); DELS=$(( DELS + d ))
+  done < <(echo "${RESULTS}" | jq -r '.[] | "\(.repository.nameWithOwner)\t\(.number)"')
+
+  echo
+  printf "Lines: +%s / -%s  (net %s)\n" "$(printf '%d' "${ADDS}")" "$(printf '%d' "${DELS}")" "$(printf '%+d' $(( ADDS - DELS )))"
+fi
