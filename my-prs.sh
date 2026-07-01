@@ -10,10 +10,10 @@ with per-day/per-week rates and total lines changed.
 
 Arguments:
   DAYS    Number of days to look back (from midnight Pacific Time).
-          If omitted, defaults to since last Thursday at 10:30 AM Pacific.
+          If omitted, defaults to since Monday at 12:00 AM Pacific.
 
 Examples:
-  $(basename "$0")        # since last Thursday 10:30 AM PT
+  $(basename "$0")        # since Monday 12:00 AM PT
   $(basename "$0") 7      # last 7 days
   $(basename "$0") 30     # last 30 days
 
@@ -36,22 +36,18 @@ if [ $# -ge 1 ]; then
   LABEL="last ${DAYS} day(s) (since midnight PT)"
 else
   DOW="$(TZ="${PT_TZ}" date +%u)"   # 1=Mon … 7=Sun, in Pacific Time
-  HHMM="$(TZ="${PT_TZ}" date +%H%M)" # current HHMM in Pacific Time
 
-  # Days since last Thursday (4). If today is Thu before 10:30 PT, use previous Thu.
-  DAYS_SINCE_THU=$(( (DOW - 4 + 7) % 7 ))
-  if [ "${DAYS_SINCE_THU}" -eq 0 ] && [ "${HHMM}" -lt 1030 ]; then
-    DAYS_SINCE_THU=7
-  fi
+  # Days since (most recent) Monday. If today is Monday, use today's 00:00 PT.
+  DAYS_SINCE_MON=$(( (DOW - 1 + 7) % 7 ))
 
-  LAST_THU="$(TZ="${PT_TZ}" date -v-"${DAYS_SINCE_THU}"d +%Y-%m-%d 2>/dev/null \
-            || TZ="${PT_TZ}" date -d "${DAYS_SINCE_THU} days ago" +%Y-%m-%d)"
+  LAST_MON="$(TZ="${PT_TZ}" date -v-"${DAYS_SINCE_MON}"d +%Y-%m-%d 2>/dev/null \
+            || TZ="${PT_TZ}" date -d "${DAYS_SINCE_MON} days ago" +%Y-%m-%d)"
 
-  # 10:30 AM Pacific on LAST_THU, as an absolute epoch second (handles DST).
-  SINCE_EPOCH="$(TZ="${PT_TZ}" date -j -f "%Y-%m-%d %H:%M:%S" "${LAST_THU} 10:30:00" +%s 2>/dev/null \
-              || TZ="${PT_TZ}" date -d "${LAST_THU} 10:30:00" +%s)"
+  # 12:00 AM Pacific on LAST_MON, as an absolute epoch second (handles DST).
+  SINCE_EPOCH="$(TZ="${PT_TZ}" date -j -f "%Y-%m-%d %H:%M:%S" "${LAST_MON} 00:00:00" +%s 2>/dev/null \
+              || TZ="${PT_TZ}" date -d "${LAST_MON} 00:00:00" +%s)"
 
-  LABEL="since last Thursday 10:30 AM PT (${LAST_THU})"
+  LABEL="since Monday 12:00 AM PT (${LAST_MON})"
 fi
 
 # GitHub's search API takes ISO 8601; use UTC for an unambiguous query string.
